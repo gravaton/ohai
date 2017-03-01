@@ -1,4 +1,4 @@
-property :plugin_name, kind_of: String, name_attribute: true
+property :plugin_name, kind_of: [String, Array], name_attribute: true
 property :path, kind_of: String
 property :source_file, kind_of: String
 property :cookbook, kind_of: String
@@ -75,6 +75,7 @@ for more details.")
 end
 
 action :create do
+  plugin_list = [new_resource.plugin_name].flatten
   # why create_if_missing you ask?
   # no one can agree on perms and this allows them to manage the perms elsewhere
   directory desired_plugin_path do
@@ -83,40 +84,45 @@ action :create do
     not_if { ::File.exist?(desired_plugin_path) }
   end
 
-  if new_resource.resource.eql?(:cookbook_file)
-    cookbook_file ::File.join(desired_plugin_path, new_resource.plugin_name + '.rb') do
-      cookbook new_resource.cookbook
-      source new_resource.source_file || "#{new_resource.plugin_name}.rb"
-      notifies :reload, "ohai[#{new_resource.plugin_name}]", :immediately
+  plugin_list.each do |plugin_item|
+    if new_resource.resource.eql?(:cookbook_file)
+      cookbook_file ::File.join(desired_plugin_path, plugin_item + '.rb') do
+        cookbook new_resource.cookbook
+        source new_resource.source_file || "#{plugin_item}.rb"
+        notifies :reload, "ohai[#{plugin_item}]", :immediately
+      end
+    elsif new_resource.resource.eql?(:template)
+      template ::File.join(desired_plugin_path, plugin_item + '.rb') do
+        cookbook new_resource.cookbook
+        source new_resource.source_file || "#{plugin_item}.rb"
+        variables new_resource.variables
+        notifies :reload, "ohai[#{plugin_item}]", :immediately
+      end
     end
-  elsif new_resource.resource.eql?(:template)
-    template ::File.join(desired_plugin_path, new_resource.plugin_name + '.rb') do
-      cookbook new_resource.cookbook
-      source new_resource.source_file || "#{new_resource.plugin_name}.rb"
-      variables new_resource.variables
-      notifies :reload, "ohai[#{new_resource.plugin_name}]", :immediately
+    # Add the plugin path to the ohai plugin path if need be and warn
+    # the user that this is going to result in a reload every run
+    unless in_plugin_path?(desired_plugin_path)
+      plugin_path_warning
+      Chef::Log.warn("Adding #{desired_plugin_path} to the Ohai plugin path for this chef-client run only")
+      add_to_plugin_path(desired_plugin_path)
+      reload_required = true
     end
-  end
 
-  # Add the plugin path to the ohai plugin path if need be and warn
-  # the user that this is going to result in a reload every run
-  unless in_plugin_path?(desired_plugin_path)
-    plugin_path_warning
-    Chef::Log.warn("Adding #{desired_plugin_path} to the Ohai plugin path for this chef-client run only")
-    add_to_plugin_path(desired_plugin_path)
-    reload_required = true
-  end
-
-  ohai new_resource.plugin_name do
-    action :nothing
-    action :reload if reload_required
+    ohai plugin_item do
+      action :nothing
+      plugin plugin_item
+      action :reload if reload_required
+    end
   end
 end
 
 action :delete do
-  file ::File.join(desired_plugin_path, new_resource.plugin_name) do
-    action :delete
-    notifies :reload, 'ohai[reload ohai post plugin removal]'
+  plugin_list = [new_resource.plugin_name].flatten
+  plugin_list.each do |plugin_item|
+    file ::File.join(desired_plugin_path, plugin_item) do
+      action :delete
+      notifies :reload, 'ohai[reload ohai post plugin removal]'
+    end
   end
 
   ohai 'reload ohai post plugin removal' do
